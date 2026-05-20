@@ -2,7 +2,7 @@
 Precompute offline assets for the pilot sample.
 
 Usage:
-    python -m blip.runner.precompute [--n 20] [--seed 42] [--smoke-test]
+    python -m blip.runner.precompute [--n 20] [--seed 42] [--max-docs 500] [--smoke-test]
 """
 from __future__ import annotations
 import argparse
@@ -30,7 +30,7 @@ def _is_answerable(answer: str) -> bool:
     return "I cannot find the answer" not in answer
 
 
-def precompute(n: int = 20, seed: int = 42, dry_run: bool = False) -> None:
+def precompute(n: int = 20, seed: int = 42, dry_run: bool = False, max_docs: int | None = None) -> None:
     cfg = load_config()
     llm = LLMClient(cfg)
     workload = PaperWorkload(seed=seed)
@@ -41,9 +41,18 @@ def precompute(n: int = 20, seed: int = 42, dry_run: bool = False) -> None:
     run_dir = _RUNS_DIR / f"precompute_{ts}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    raw_pairs = workload.all_qa_pairs()
     import random
     rng = random.Random(seed)
+
+    raw_pairs = workload.all_qa_pairs()
+    if max_docs is not None:
+        all_docs = list({p["doi"] for p in raw_pairs})
+        rng_docs = random.Random(seed + 1)
+        rng_docs.shuffle(all_docs)
+        allowed = set(all_docs[:max_docs])
+        raw_pairs = [p for p in raw_pairs if p["doi"] in allowed]
+        logger.info("max_docs=%d: %d docs selected, %d pairs available", max_docs, len(allowed), len(raw_pairs))
+
     rng.shuffle(raw_pairs)
 
     sample_rows = []
@@ -92,7 +101,8 @@ def precompute(n: int = 20, seed: int = 42, dry_run: bool = False) -> None:
         logger.info("Pair %04d: %s tokens, answer: %s", pair_id, text_tokens, answer[:60])
 
     if not dry_run:
-        out_file = _SAMPLES_DIR / f"sample_{n}_seed{seed}.jsonl"
+        doc_tag = f"_docs{max_docs}" if max_docs is not None else ""
+        out_file = _SAMPLES_DIR / f"sample_{n}_seed{seed}{doc_tag}.jsonl"
         with out_file.open("w") as f:
             for row in sample_rows:
                 f.write(json.dumps(row) + "\n")
@@ -119,6 +129,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--n", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--max-docs", type=int, default=None)
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -130,7 +141,7 @@ def main() -> None:
         smoke_test(llm)
         return
 
-    precompute(n=args.n, seed=args.seed, dry_run=args.dry_run)
+    precompute(n=args.n, seed=args.seed, dry_run=args.dry_run, max_docs=args.max_docs)
 
 
 if __name__ == "__main__":

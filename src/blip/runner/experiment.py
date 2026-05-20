@@ -230,6 +230,7 @@ def run_experiment(
     strategy_name: str,
     n: int = 20,
     seed: int = 42,
+    max_docs: int | None = None,
 ) -> None:
     cfg = load_config()
     llm = LLMClient(cfg)
@@ -245,7 +246,8 @@ def run_experiment(
     else:
         ranker = embed_ranker
 
-    sample_file = _SAMPLES_DIR / f"sample_{n}_seed{seed}.jsonl"
+    doc_tag = f"_docs{max_docs}" if max_docs is not None else ""
+    sample_file = _SAMPLES_DIR / f"sample_{n}_seed{seed}{doc_tag}.jsonl"
     if not sample_file.exists():
         raise FileNotFoundError(f"Sample not found: {sample_file}. Run precompute first.")
 
@@ -311,8 +313,9 @@ def main() -> None:
     parser.add_argument("--strategy", required=True)
     parser.add_argument("--n", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--max-docs", type=int, default=None)
     args = parser.parse_args()
-    run_experiment(args.strategy, n=args.n, seed=args.seed)
+    run_experiment(args.strategy, n=args.n, seed=args.seed, max_docs=args.max_docs)
 
 
 if __name__ == "__main__":
