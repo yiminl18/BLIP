@@ -44,6 +44,9 @@ class ProvenanceResult:
     size_ratio: float
     cost_ratio: float
     latency_s: float
-    usages: list[Usage]
+    usages: list[Usage]                        # flat list for cost ledger
+    phase_usages: list[tuple[str, Usage]]      # (phase, usage) for per-phase breakdown
     verified: bool
+    final_answer: str = ""                     # A' = L(P, Q)
+    baseline_cost_usd: float = 0.0             # cost(L(T, Q)) — denominator
     fastpath_hit: bool = False

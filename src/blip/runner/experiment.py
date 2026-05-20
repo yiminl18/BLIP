@@ -11,18 +11,21 @@ To disable: embedding_adaptive_exp_off
 """
 from __future__ import annotations
 import argparse
+import datetime
 import json
 import logging
+import subprocess
 import time
 from pathlib import Path
 
 from blip.config import load_config
 from blip.llm.client import LLMClient
+from blip.llm.judge import equivalent
 from blip.workloads.paper import PaperWorkload
-from blip.text.segmenter import segment
 from blip.text.blocks import build_blocks
 from blip.text.tokens import count_tokens
-from blip._types import Sentence, Pair
+from blip._types import Sentence, Pair, ProvenanceResult
+from blip.llm.usage import Usage
 from blip.pipeline import StrategySpec, run
 from blip.rank.embedding import EmbeddingRanker
 from blip.rank.llm import LLMRanker
@@ -35,8 +38,16 @@ _REPO_ROOT = Path(__file__).parent.parent.parent.parent
 _SAMPLES_DIR = _REPO_ROOT / "workload" / "paper" / "samples"
 _RUNS_DIR = _REPO_ROOT / "runs"
 
-
 _FASTPATH_VALUES = {"off", "only", "refine", "then_blip"}
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=_REPO_ROOT, text=True
+        ).strip()
+    except Exception:
+        return "unknown"
 
 
 def _parse_strategy(name: str) -> StrategySpec:
@@ -51,13 +62,13 @@ def _parse_strategy(name: str) -> StrategySpec:
     ranker = parts[0]   # embedding | llm
     scan = parts[1]     # bottom_up | top_down | adaptive
     refine = parts[2]   # none | seq | exp | auto
-    # optional 4th component overrides fastpath
     fastpath = parts[3] if len(parts) >= 4 and parts[3] in _FASTPATH_VALUES else "refine"
     return StrategySpec(name=name, ranker=ranker, scan=scan, refine=refine, fastpath=fastpath)
 
 
-def load_pairs_from_sample(sample_file: Path, workload: PaperWorkload) -> list[Pair]:
-    pairs = []
+def load_pairs_from_sample(sample_file: Path, workload: PaperWorkload) -> list[tuple[Pair, dict]]:
+    """Return (Pair, raw_row) tuples so the runner can access raw fields."""
+    result = []
     for line in sample_file.read_text().splitlines():
         row = json.loads(line)
         doi = row["doi"]
@@ -67,7 +78,7 @@ def load_pairs_from_sample(sample_file: Path, workload: PaperWorkload) -> list[P
             for i, s in enumerate(sents_text)
         ]
         blocks = build_blocks(sents)
-        pairs.append(Pair(
+        pair = Pair(
             pair_id=row["pair_id"],
             doc_id=doi,
             question=row["question"],
@@ -75,8 +86,144 @@ def load_pairs_from_sample(sample_file: Path, workload: PaperWorkload) -> list[P
             llm_answer=row["llm_answer"],
             sentences=tuple(sents),
             blocks=tuple(blocks),
-        ))
-    return pairs
+        )
+        result.append((pair, row))
+    return result
+
+
+def _phase_token_summary(phase_usages: list[tuple[str, Usage]]) -> dict:
+    by_phase: dict[str, dict] = {}
+    for phase, u in phase_usages:
+        if phase not in by_phase:
+            by_phase[phase] = {"in": 0, "in_cached": 0, "out": 0}
+        by_phase[phase]["in"] += u.prompt_tokens
+        by_phase[phase]["in_cached"] += u.cached_tokens
+        by_phase[phase]["out"] += u.completion_tokens
+    return by_phase
+
+
+def _phase_cost_summary(phase_usages: list[tuple[str, Usage]]) -> dict:
+    by_phase: dict[str, float] = {}
+    for phase, u in phase_usages:
+        by_phase[phase] = by_phase.get(phase, 0.0) + token_cost(u)
+    return by_phase
+
+
+def _phase_call_counts(phase_usages: list[tuple[str, Usage]]) -> dict:
+    counts: dict[str, int] = {}
+    for phase, _ in phase_usages:
+        counts[phase] = counts.get(phase, 0) + 1
+    counts["total"] = len(phase_usages)
+    return counts
+
+
+def _judge_gt(answer: str, ground_truth: str | None, llm: LLMClient, pair: Pair) -> bool | None:
+    """Compare answer to ground truth using the judge. Returns None if no ground truth."""
+    if ground_truth is None:
+        return None
+    is_eq, _ = equivalent(answer, ground_truth, llm_client=llm, pair=pair)
+    return is_eq
+
+
+def _build_row(
+    result: ProvenanceResult,
+    pair: Pair,
+    raw_row: dict,
+    cfg,
+    git_sha: str,
+    run_id: str,
+    llm: LLMClient,
+) -> dict:
+    sent_map = {s.idx: s.text for s in pair.sentences}
+    provenance_sentences = [sent_map[i] for i in result.provenance_idxs]
+    provenance_tokens = sum(
+        s.token_count for s in pair.sentences if s.idx in set(result.provenance_idxs)
+    )
+    text_tokens = raw_row.get("text_tokens", sum(s.token_count for s in pair.sentences))
+    text_sentences = raw_row.get("text_sentence_count", len(pair.sentences))
+
+    total_cost_usd = sum(token_cost(u) for u in result.usages)
+    cache_hit_rate = (
+        sum(u.cached_tokens for u in result.usages) /
+        max(sum(u.prompt_tokens for u in result.usages), 1)
+    )
+
+    acc_baseline_vs_gt = _judge_gt(pair.llm_answer, pair.ground_truth, llm, pair)
+    acc_answer_vs_gt = _judge_gt(result.final_answer, pair.ground_truth, llm, pair)
+
+    return {
+        # --- identification ---
+        "pair_id": result.pair_id,
+        "doc_id": pair.doc_id,
+        "question": pair.question,
+        "strategy": result.strategy,
+        "fastpath_mode": result.strategy.split("_")[3] if len(result.strategy.split("_")) > 3 else "refine",
+        "run_id": run_id,
+        "git_sha": git_sha,
+        "timestamp_utc": datetime.datetime.utcnow().isoformat() + "Z",
+
+        # --- inputs ---
+        "text_tokens": text_tokens,
+        "text_sentences": text_sentences,
+        "baseline_answer": pair.llm_answer,
+        "baseline_answer_tokens": count_tokens(pair.llm_answer),
+        "ground_truth": pair.ground_truth,
+
+        # --- provenance output ---
+        "provenance_idxs": list(result.provenance_idxs),
+        "provenance_sentences": provenance_sentences,
+        "provenance_size": len(result.provenance_idxs),
+        "provenance_tokens": provenance_tokens,
+        "size_ratio": result.size_ratio,
+
+        # --- accuracy ---
+        "accuracy": {
+            "accuracy_provenance": result.verified,
+            "accuracy_answer_vs_gt": acc_answer_vs_gt,
+            "accuracy_baseline_vs_gt": acc_baseline_vs_gt,
+        },
+        "verified": result.verified,
+        "final_answer": result.final_answer,
+        "final_answer_tokens": count_tokens(result.final_answer),
+
+        # --- fast-path ---
+        "fastpath_hit": result.fastpath_hit,
+
+        # --- llm call counts by phase ---
+        "llm_calls": _phase_call_counts(result.phase_usages),
+
+        # --- token totals ---
+        "tokens": {
+            "input_total": sum(u.prompt_tokens for u in result.usages),
+            "input_cached_total": sum(u.cached_tokens for u in result.usages),
+            "output_total": sum(u.completion_tokens for u in result.usages),
+            "cache_hit_rate": round(cache_hit_rate, 4),
+            "by_phase": _phase_token_summary(result.phase_usages),
+        },
+
+        # --- cost ---
+        "cost_usd": {
+            "baseline": result.baseline_cost_usd,
+            "total": total_cost_usd,
+            "by_phase": _phase_cost_summary(result.phase_usages),
+        },
+        "cost_ratio": result.cost_ratio,
+
+        # --- latency ---
+        "latency_s": result.latency_s,
+
+        # --- config snapshot ---
+        "config": {
+            "model_driver": cfg.azure.driver.deployment,
+            "model_judge": cfg.azure.driver.deployment,
+            "model_embed": cfg.azure.embed.deployment,
+            "block_count_m": cfg.block_count_m,
+            "refine_threshold_t": cfg.refine_threshold_t,
+            "f_L_driver": cfg.f_L_driver,
+            "judge_prompt": cfg.judge_prompt,
+            "seed": cfg.seed,
+        },
+    }
 
 
 def run_experiment(
@@ -88,10 +235,10 @@ def run_experiment(
     llm = LLMClient(cfg)
     cache = DiskCache(cfg.cache_dir, "embeddings")
     workload = PaperWorkload(seed=seed)
+    git_sha = _git_sha()
 
     strategy = _parse_strategy(strategy_name)
 
-    # Build ranker
     embed_ranker = EmbeddingRanker(llm, cache=cache)
     if strategy.ranker == "llm":
         ranker = LLMRanker(llm, fallback=embed_ranker)
@@ -102,9 +249,10 @@ def run_experiment(
     if not sample_file.exists():
         raise FileNotFoundError(f"Sample not found: {sample_file}. Run precompute first.")
 
-    pairs = load_pairs_from_sample(sample_file, workload)
+    pairs_with_rows = load_pairs_from_sample(sample_file, workload)
 
     ts = int(time.time())
+    run_id = f"{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M')}-{ts % 10000:04x}"
     run_dir = _RUNS_DIR / f"{strategy_name}_{ts}"
     run_dir.mkdir(parents=True, exist_ok=True)
     out_file = run_dir / "results.jsonl"
@@ -114,7 +262,7 @@ def run_experiment(
     verified_count = 0
 
     with out_file.open("w") as out_f, log_file.open("w") as log_f:
-        for pair in pairs:
+        for pair, raw_row in pairs_with_rows:
             try:
                 result = run(
                     pair, strategy, ranker, llm,
@@ -123,45 +271,38 @@ def run_experiment(
                 if result.verified:
                     verified_count += 1
 
-                row = {
-                    "pair_id": result.pair_id,
-                    "strategy": result.strategy,
-                    "verified": result.verified,
-                    "size_ratio": result.size_ratio,
-                    "cost_ratio": result.cost_ratio,
-                    "latency_s": result.latency_s,
-                    "fastpath_hit": result.fastpath_hit,
-                    "n_usages": len(result.usages),
-                    "provenance_size": len(result.provenance_idxs),
-                }
+                row = _build_row(result, pair, raw_row, cfg, git_sha, run_id, llm)
                 out_f.write(json.dumps(row) + "\n")
 
-                for u in result.usages:
+                for phase, u in result.phase_usages:
                     log_f.write(json.dumps({
                         "pair_id": pair.pair_id,
+                        "phase": phase,
                         "model": u.model,
                         "prompt_tokens": u.prompt_tokens,
                         "cached_tokens": u.cached_tokens,
                         "completion_tokens": u.completion_tokens,
                         "cost": token_cost(u),
                     }) + "\n")
-                    ledger.record("run", u)
+                    ledger.record(phase, u)
 
                 logger.info(
-                    "Pair %s: verified=%s size=%.3f cost=%.3fx latency=%.1fs",
+                    "Pair %s: verified=%s size=%.3f cost=%.3fx latency=%.1fs fp_hit=%s",
                     pair.pair_id, result.verified, result.size_ratio,
-                    result.cost_ratio, result.latency_s,
+                    result.cost_ratio, result.latency_s, result.fastpath_hit,
                 )
             except Exception as e:
-                logger.error("Pair %s failed: %s", pair.pair_id, e)
+                logger.error("Pair %s failed: %s", pair.pair_id, e, exc_info=True)
                 out_f.write(json.dumps({"pair_id": pair.pair_id, "error": str(e)}) + "\n")
 
     cost_summary = ledger.to_dict()
     cost_summary["verified"] = verified_count
-    cost_summary["total"] = len(pairs)
-    cost_summary["accuracy"] = verified_count / len(pairs) if pairs else 0
+    cost_summary["total"] = len(pairs_with_rows)
+    cost_summary["accuracy"] = verified_count / len(pairs_with_rows) if pairs_with_rows else 0
+    cost_summary["run_id"] = run_id
+    cost_summary["git_sha"] = git_sha
     (run_dir / "cost.json").write_text(json.dumps(cost_summary, indent=2))
-    logger.info("Done. Accuracy=%.3f, Cost=%s", cost_summary["accuracy"], cost_summary)
+    logger.info("Done. accuracy=%.3f total_cost=$%.4f", cost_summary["accuracy"], cost_summary["total_cost"])
 
 
 def main() -> None:
