@@ -2,9 +2,12 @@
 Run a strategy on the pre-computed sample and write JSONL results.
 
 Usage:
-    python -m blip.runner.experiment --strategy embedding_adaptive_auto [--n 20] [--seed 42]
+    python -m blip.runner.experiment --strategy embedding_adaptive_exp [--n 20] [--seed 42]
 
-Strategy names: {embedding|llm}_{bottom_up|top_down|adaptive}_{none|seq|exp|auto}
+Strategy names: {embedding|llm}_{bottom_up|top_down|adaptive}_{none|seq|exp|auto}[_{off|only|refine|then_blip}]
+
+The fastpath component is optional; it defaults to "refine" (LLM-citation fast path).
+To disable: embedding_adaptive_exp_off
 """
 from __future__ import annotations
 import argparse
@@ -33,15 +36,24 @@ _SAMPLES_DIR = _REPO_ROOT / "workload" / "paper" / "samples"
 _RUNS_DIR = _REPO_ROOT / "runs"
 
 
+_FASTPATH_VALUES = {"off", "only", "refine", "then_blip"}
+
+
 def _parse_strategy(name: str) -> StrategySpec:
-    """Parse strategy name like 'embedding_adaptive_auto'."""
+    """Parse strategy name like 'embedding_adaptive_exp' or 'embedding_adaptive_exp_off'.
+
+    Format: {ranker}_{scan}_{refine}[_{fastpath}]
+    fastpath defaults to "refine" (LLM-citation fast path always on).
+    """
     parts = name.split("_")
     if len(parts) < 3:
-        raise ValueError(f"Strategy name must be ranker_scan_refine, got: {name}")
-    ranker = parts[0]      # embedding | llm
-    scan = parts[1]        # bottom_up | top_down | adaptive
-    refine = parts[2]      # none | seq | exp | auto
-    return StrategySpec(name=name, ranker=ranker, scan=scan, refine=refine)
+        raise ValueError(f"Strategy name must be ranker_scan_refine[_fastpath], got: {name}")
+    ranker = parts[0]   # embedding | llm
+    scan = parts[1]     # bottom_up | top_down | adaptive
+    refine = parts[2]   # none | seq | exp | auto
+    # optional 4th component overrides fastpath
+    fastpath = parts[3] if len(parts) >= 4 and parts[3] in _FASTPATH_VALUES else "refine"
+    return StrategySpec(name=name, ranker=ranker, scan=scan, refine=refine, fastpath=fastpath)
 
 
 def load_pairs_from_sample(sample_file: Path, workload: PaperWorkload) -> list[Pair]:
@@ -107,7 +119,6 @@ def run_experiment(
                 result = run(
                     pair, strategy, ranker, llm,
                     refine_threshold_t=cfg.refine_threshold_t,
-                    fastpath_mode=cfg.fastpath if strategy.fastpath == "off" else None,
                 )
                 if result.verified:
                     verified_count += 1

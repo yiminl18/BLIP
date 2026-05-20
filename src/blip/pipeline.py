@@ -22,7 +22,7 @@ class StrategySpec:
     ranker: str = "embedding"        # "embedding" | "llm"
     scan: str = "bottom_up"          # "bottom_up" | "top_down" | "adaptive"
     refine: str = "auto"             # "none" | "seq" | "exp" | "auto"
-    fastpath: str = "off"            # "off" | "only" | "refine" | "then_blip"
+    fastpath: str = "refine"         # "off" | "only" | "refine" | "then_blip"
 
 
 def _text_of(sentence_idxs: list[int], pair: Pair) -> str:
