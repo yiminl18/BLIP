@@ -212,6 +212,8 @@ def _build_row(
 
         # --- latency ---
         "latency_s": result.latency_s,
+        "stage1_latency_s": result.stage1_latency_s,
+        "stage2_latency_s": result.stage2_latency_s,
 
         # --- config snapshot ---
         "config": {

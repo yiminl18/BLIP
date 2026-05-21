@@ -81,17 +81,22 @@ def run(
                 final_answer = _get_final_answer(fp_idxs, pair, llm, phase_usages)
                 return _make_result(
                     pair, strategy, fp_idxs, phase_usages,
-                    final_answer, latency, verified=True, fastpath_hit=True,
+                    final_answer, latency,
+                    stage1_latency=latency, stage2_latency=0.0,
+                    verified=True, fastpath_hit=True,
                 )
 
     # 1. Prune
+    t1 = time.perf_counter()
     if strategy.scan == "adaptive":
         pruned_idxs, prune_usages = adaptive_mod.adaptive_prune(pair, ranker, llm)
     else:
         pruned_idxs, prune_usages = prune_mod.prune(pair, ranker, llm, scan=strategy.scan)
     _record("prune", prune_usages)
+    stage1_latency = time.perf_counter() - t1
 
     # 2. Refine
+    t2 = time.perf_counter()
     refined_idxs, ref_usages, ref_answer = _do_refine(
         pruned_idxs, pair, llm, strategy.refine, refine_threshold_t
     )
@@ -105,11 +110,14 @@ def run(
         text = _text_of(refined_idxs, pair)
         final_answer, verify_usage = llm.answer(text, pair.question)
         _record("verify_final", [verify_usage])
+    stage2_latency = time.perf_counter() - t2
 
     latency = time.perf_counter() - t0
     return _make_result(
         pair, strategy, refined_idxs, phase_usages,
-        final_answer, latency, verified=True, fastpath_hit=False,
+        final_answer, latency,
+        stage1_latency=stage1_latency, stage2_latency=stage2_latency,
+        verified=True, fastpath_hit=False,
     )
 
 
@@ -132,6 +140,8 @@ def _make_result(
     phase_usages: list[tuple[str, Usage]],
     final_answer: str,
     latency: float,
+    stage1_latency: float,
+    stage2_latency: float,
     verified: bool,
     fastpath_hit: bool,
 ) -> ProvenanceResult:
@@ -143,6 +153,8 @@ def _make_result(
         size_ratio=_size_ratio(sentence_idxs, pair),
         cost_ratio=_cost_ratio(phase_usages, pair),
         latency_s=latency,
+        stage1_latency_s=stage1_latency,
+        stage2_latency_s=stage2_latency,
         usages=flat_usages,
         phase_usages=phase_usages,
         verified=verified,

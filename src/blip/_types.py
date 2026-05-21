@@ -44,6 +44,8 @@ class ProvenanceResult:
     size_ratio: float
     cost_ratio: float
     latency_s: float
+    stage1_latency_s: float                    # prune phase wall time
+    stage2_latency_s: float                    # refine phase wall time
     usages: list[Usage]                        # flat list for cost ledger
     phase_usages: list[tuple[str, Usage]]      # (phase, usage) for per-phase breakdown
     verified: bool
