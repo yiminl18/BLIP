@@ -6,6 +6,7 @@ Usage:
 """
 from __future__ import annotations
 import argparse
+import datetime
 import json
 import logging
 import time
@@ -37,8 +38,7 @@ def precompute(n: int = 20, seed: int = 42, dry_run: bool = False, max_docs: int
     ledger = CostLedger(f_L=cfg.f_L_driver)
 
     _SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
-    ts = int(time.time())
-    run_dir = _RUNS_DIR / f"precompute_{ts}"
+    run_dir = _RUNS_DIR / "precompute" / f"n{n}_{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M')}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     import random

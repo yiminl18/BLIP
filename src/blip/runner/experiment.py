@@ -258,7 +258,7 @@ def run_experiment(
 
     ts = int(time.time())
     run_id = f"{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M')}-{ts % 10000:04x}"
-    run_dir = _RUNS_DIR / f"{strategy_name}_{ts}"
+    run_dir = _RUNS_DIR / strategy_name / f"n{n}_{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M')}"
     run_dir.mkdir(parents=True, exist_ok=True)
     out_file = run_dir / "results.jsonl"
     log_file = run_dir / "log.jsonl"
