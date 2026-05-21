@@ -8,6 +8,10 @@ from blip.llm.judge import equivalent
 from blip.rank.base import Ranker
 
 
+class SkipPair(Exception):
+    """Raised when the full document text does not produce an answerable response; pair is skipped."""
+
+
 def _text_of(sentence_idxs: list[int], pair: Pair) -> str:
     sent_map = {s.idx: s.text for s in pair.sentences}
     return " ".join(sent_map[i] for i in sorted(sentence_idxs))
@@ -68,7 +72,8 @@ def prune_top_down(
     usages.append(usage_full)
     is_equiv_full, ju = equivalent(answer_full, pair.llm_answer, llm_client=llm, pair=pair)
     usages.extend(ju)
-    assert is_equiv_full, f"Full text does not verify for pair {pair.pair_id}"
+    if not is_equiv_full:
+        raise SkipPair(f"Full text answer not found for pair {pair.pair_id}")
 
     l, r = 1, m
     best: list[int] = full_sent_idxs

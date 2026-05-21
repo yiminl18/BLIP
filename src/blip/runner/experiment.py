@@ -27,6 +27,7 @@ from blip.text.tokens import count_tokens
 from blip._types import Sentence, Pair, ProvenanceResult
 from blip.llm.usage import Usage
 from blip.pipeline import StrategySpec, run
+from blip.algo.prune import SkipPair
 from blip.rank.embedding import EmbeddingRanker
 from blip.rank.llm import LLMRanker
 from blip.cache.disk import DiskCache
@@ -261,7 +262,8 @@ def run_experiment(
     log_file = run_dir / "log.jsonl"
 
     ledger = CostLedger(f_L=cfg.f_L_driver)
-    verified_count = 0
+    success_count = 0
+    skip_count = 0
 
     with out_file.open("w") as out_f, log_file.open("w") as log_f:
         for pair, raw_row in pairs_with_rows:
@@ -270,8 +272,7 @@ def run_experiment(
                     pair, strategy, ranker, llm,
                     refine_threshold_t=cfg.refine_threshold_t,
                 )
-                if result.verified:
-                    verified_count += 1
+                success_count += 1
 
                 row = _build_row(result, pair, raw_row, cfg, git_sha, run_id, llm)
                 out_f.write(json.dumps(row) + "\n")
@@ -289,22 +290,26 @@ def run_experiment(
                     ledger.record(phase, u)
 
                 logger.info(
-                    "Pair %s: verified=%s size=%.3f cost=%.3fx latency=%.1fs fp_hit=%s",
-                    pair.pair_id, result.verified, result.size_ratio,
+                    "Pair %s: size=%.3f cost=%.3fx latency=%.1fs fp_hit=%s",
+                    pair.pair_id, result.size_ratio,
                     result.cost_ratio, result.latency_s, result.fastpath_hit,
                 )
+            except SkipPair as e:
+                skip_count += 1
+                logger.info("Pair %s skipped: %s", pair.pair_id, e)
+                out_f.write(json.dumps({"pair_id": pair.pair_id, "skipped": True, "reason": str(e)}) + "\n")
             except Exception as e:
                 logger.error("Pair %s failed: %s", pair.pair_id, e, exc_info=True)
                 out_f.write(json.dumps({"pair_id": pair.pair_id, "error": str(e)}) + "\n")
 
     cost_summary = ledger.to_dict()
-    cost_summary["verified"] = verified_count
+    cost_summary["success"] = success_count
+    cost_summary["skipped"] = skip_count
     cost_summary["total"] = len(pairs_with_rows)
-    cost_summary["accuracy"] = verified_count / len(pairs_with_rows) if pairs_with_rows else 0
     cost_summary["run_id"] = run_id
     cost_summary["git_sha"] = git_sha
     (run_dir / "cost.json").write_text(json.dumps(cost_summary, indent=2))
-    logger.info("Done. accuracy=%.3f total_cost=$%.4f", cost_summary["accuracy"], cost_summary["total_cost"])
+    logger.info("Done. success=%d skipped=%d total_cost=$%.4f", success_count, skip_count, cost_summary["total_cost"])
 
 
 def main() -> None:
