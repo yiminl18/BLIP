@@ -7,13 +7,13 @@ from blip._types import Sentence
 
 def test_segment_basic():
     text = "This is sentence one. This is sentence two. And three."
-    sents = segment(text)
+    sents = segment(text, min_tokens=1)  # no merging
     assert len(sents) >= 2
     assert all(isinstance(s, str) for s in sents)
 
 
 def test_segment_nonempty():
-    sents = segment("Hello world.")
+    sents = segment("Hello world.", min_tokens=1)
     assert len(sents) == 1
     assert sents[0] == "Hello world."
 
