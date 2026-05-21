@@ -5,7 +5,6 @@ from typing import Literal
 
 from blip._types import Pair, ProvenanceResult
 from blip.llm.client import LLMClient
-from blip.llm.judge import equivalent
 from blip.llm.usage import Usage
 from blip.rank.base import Ranker
 from blip.algo import prune as prune_mod
@@ -76,7 +75,7 @@ def run(
             if is_ver:
                 fastpath_hit = True
                 if fp_mode == "refine":
-                    fp_idxs, ref_usages = _do_refine(fp_idxs, pair, llm, "auto", refine_threshold_t)
+                    fp_idxs, ref_usages, _ = _do_refine(fp_idxs, pair, llm, "auto", refine_threshold_t)
                     _record("refine", ref_usages)
                 latency = time.perf_counter() - t0
                 final_answer = _get_final_answer(fp_idxs, pair, llm, phase_usages)
@@ -93,23 +92,24 @@ def run(
     _record("prune", prune_usages)
 
     # 2. Refine
-    refined_idxs, ref_usages = _do_refine(
+    refined_idxs, ref_usages, ref_answer = _do_refine(
         pruned_idxs, pair, llm, strategy.refine, refine_threshold_t
     )
     _record("refine", ref_usages)
 
-    # Final verification
-    text = _text_of(refined_idxs, pair)
-    answer, verify_usage = llm.answer(text, pair.question)
-    _record("verify_final", [verify_usage])
-    is_ver, judge_usages = equivalent(answer, pair.llm_answer, llm_client=llm, pair=pair)
-    _record("judge", judge_usages)
-    assert is_ver, f"BUG: returned provenance does not verify on pair {pair.pair_id}"
+    # Get final answer: reuse the last verified answer from refine if available,
+    # otherwise call LLM once (prune already verified this provenance).
+    if ref_answer is not None:
+        final_answer = ref_answer
+    else:
+        text = _text_of(refined_idxs, pair)
+        final_answer, verify_usage = llm.answer(text, pair.question)
+        _record("verify_final", [verify_usage])
 
     latency = time.perf_counter() - t0
     return _make_result(
         pair, strategy, refined_idxs, phase_usages,
-        answer, latency, verified=True, fastpath_hit=False,
+        final_answer, latency, verified=True, fastpath_hit=False,
     )
 
 
@@ -158,9 +158,9 @@ def _do_refine(
     llm: LLMClient,
     refine_mode: str,
     threshold_t: int,
-) -> tuple[list[int], list[Usage]]:
+) -> tuple[list[int], list[Usage], str | None]:
     if refine_mode == "none":
-        return sentence_idxs, []
+        return sentence_idxs, [], None
     if refine_mode == "seq" or (refine_mode == "auto" and len(sentence_idxs) < threshold_t):
         return refine_mod.sequential_greedy(sentence_idxs, pair, llm)
     else:

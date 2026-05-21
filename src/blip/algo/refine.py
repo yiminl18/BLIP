@@ -13,14 +13,16 @@ def sequential_greedy(
     sentence_idxs: list[int],
     pair: Pair,
     llm: LLMClient,
-) -> tuple[list[int], list]:
+) -> tuple[list[int], list, str | None]:
     """
     Algorithm 2a: Sequential_Greedy.
     Process sentences descending for KV-cache reuse.
-    Returns (refined_sentence_indices, usages).
+    Returns (refined_sentence_indices, usages, last_verified_answer).
+    last_verified_answer is None if no sentence was removed (input already minimal).
     """
     p = list(sentence_idxs)
     usages = []
+    last_answer: str | None = None
     changed = True
     while changed:
         changed = False
@@ -35,8 +37,9 @@ def sequential_greedy(
             usages.extend(ju)
             if is_equiv:
                 p = p_prime
+                last_answer = answer
                 changed = True
-    return sorted(p), usages
+    return sorted(p), usages, last_answer
 
 
 def _exponential_inner(
@@ -44,6 +47,7 @@ def _exponential_inner(
     pair: Pair,
     llm: LLMClient,
     usages: list,
+    last_answer: list,  # single-element list used as mutable ref
 ) -> list[int]:
     """One pass of exponential_greedy_inner."""
     j = len(p) - 1
@@ -54,7 +58,6 @@ def _exponential_inner(
         p_prime = [x for x in p if x not in chunk]
         text = _text_of(p_prime, pair) if p_prime else ""
         if not p_prime:
-            # can't remove all sentences
             l_exp = 0
             j -= 1
             continue
@@ -64,10 +67,10 @@ def _exponential_inner(
         usages.extend(ju)
         if is_equiv:
             p = p_prime
+            last_answer[0] = answer
             j = i - l_exp - 1 + 1  # paper line 14: j ← i − 1 − l + 1 → simplified to i - l_exp
             l_exp += 1
         else:
-            # reset; j stays same, retry with window=1 next iter
             l_exp = 0
             j -= 1
     return p
@@ -77,15 +80,17 @@ def exponential_greedy(
     sentence_idxs: list[int],
     pair: Pair,
     llm: LLMClient,
-) -> tuple[list[int], list]:
+) -> tuple[list[int], list, str | None]:
     """
     Algorithm 2b: Exponential_Greedy with outer fixed-point loop.
-    Returns (refined_sentence_indices, usages).
+    Returns (refined_sentence_indices, usages, last_verified_answer).
+    last_verified_answer is None if no sentence was removed.
     """
     p = list(sentence_idxs)
     usages: list = []
+    last_answer: list = [None]
     p_prev = None
     while p_prev != p:
         p_prev = p[:]
-        p = _exponential_inner(p, pair, llm, usages)
-    return sorted(p), usages
+        p = _exponential_inner(p, pair, llm, usages, last_answer)
+    return sorted(p), usages, last_answer[0]

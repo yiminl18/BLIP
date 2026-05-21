@@ -38,23 +38,25 @@ def test_seq_removes_irrelevant():
     texts = [f"sent{i}" for i in range(5)]
     pair = _make_pair(texts)
     llm = _FakeLLM(needed_idxs={0, 2})  # only sents 0 and 2 needed
-    refined, usages = sequential_greedy(list(range(5)), pair, llm)
+    refined, usages, answer = sequential_greedy(list(range(5)), pair, llm)
     assert set(refined) == {0, 2}
+    assert answer == "Paris"
 
 
 def test_seq_all_needed():
     texts = [f"sent{i}" for i in range(4)]
     pair = _make_pair(texts)
     llm = _FakeLLM(needed_idxs={0, 1, 2, 3})
-    refined, _ = sequential_greedy(list(range(4)), pair, llm)
+    refined, _, answer = sequential_greedy(list(range(4)), pair, llm)
     assert set(refined) == {0, 1, 2, 3}
+    assert answer is None  # no sentence removed, no verified answer captured
 
 
 def test_seq_output_sorted():
     texts = [f"sent{i}" for i in range(6)]
     pair = _make_pair(texts)
     llm = _FakeLLM(needed_idxs={1, 3, 5})
-    refined, _ = sequential_greedy(list(range(6)), pair, llm)
+    refined, _, _ = sequential_greedy(list(range(6)), pair, llm)
     assert refined == sorted(refined)
 
 
@@ -62,13 +64,15 @@ def test_exp_removes_irrelevant():
     texts = [f"sent{i}" for i in range(5)]
     pair = _make_pair(texts)
     llm = _FakeLLM(needed_idxs={2})
-    refined, _ = exponential_greedy(list(range(5)), pair, llm)
+    refined, _, answer = exponential_greedy(list(range(5)), pair, llm)
     assert set(refined) == {2}
+    assert answer == "Paris"
 
 
 def test_exp_all_needed():
     texts = [f"sent{i}" for i in range(4)]
     pair = _make_pair(texts)
     llm = _FakeLLM(needed_idxs={0, 1, 2, 3})
-    refined, _ = exponential_greedy(list(range(4)), pair, llm)
+    refined, _, answer = exponential_greedy(list(range(4)), pair, llm)
     assert set(refined) == {0, 1, 2, 3}
+    assert answer is None  # no sentence removed
