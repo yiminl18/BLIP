@@ -51,19 +51,45 @@ def _git_sha() -> str:
         return "unknown"
 
 
+_SCAN_VALUES = {"adaptive", "bottom_up", "top_down"}
+_REFINE_VALUES = {"none", "seq", "exp", "auto"}
+
+
 def _parse_strategy(name: str) -> StrategySpec:
-    """Parse strategy name like 'embedding_adaptive_exp' or 'embedding_adaptive_exp_off'.
+    """Parse strategy name like 'embedding_adaptive_exp_then_blip'.
 
     Format: {ranker}_{scan}_{refine}[_{fastpath}]
-    fastpath defaults to "refine" (LLM-citation fast path always on).
+    scan can be 'bottom_up' or 'top_down' (two underscore-separated tokens).
+    fastpath can be 'then_blip' (two tokens) or 'off'/'only'/'refine' (one token).
+    fastpath defaults to 'refine'.
     """
     parts = name.split("_")
-    if len(parts) < 3:
-        raise ValueError(f"Strategy name must be ranker_scan_refine[_fastpath], got: {name}")
-    ranker = parts[0]   # embedding | llm
-    scan = parts[1]     # bottom_up | top_down | adaptive
-    refine = parts[2]   # none | seq | exp | auto
-    fastpath = parts[3] if len(parts) >= 4 and parts[3] in _FASTPATH_VALUES else "refine"
+    ranker = parts[0]  # embedding | llm
+    rest = parts[1:]
+
+    # scan: 2-token ("bottom_up", "top_down") or 1-token ("adaptive")
+    if len(rest) >= 2 and rest[0] + "_" + rest[1] in _SCAN_VALUES:
+        scan = rest[0] + "_" + rest[1]
+        rest = rest[2:]
+    elif rest and rest[0] in _SCAN_VALUES:
+        scan = rest[0]
+        rest = rest[1:]
+    else:
+        raise ValueError(f"Cannot parse scan from strategy name: {name}")
+
+    if not rest or rest[0] not in _REFINE_VALUES:
+        raise ValueError(f"Cannot parse refine from strategy name: {name}")
+    refine = rest[0]
+    rest = rest[1:]
+
+    # fastpath: 2-token "then_blip" or 1-token "off"/"only"/"refine"
+    if len(rest) >= 2 and rest[0] + "_" + rest[1] in _FASTPATH_VALUES:
+        fastpath = rest[0] + "_" + rest[1]
+    elif rest and rest[0] in _FASTPATH_VALUES:
+        fastpath = rest[0]
+    else:
+        fastpath = "refine"  # default
+
     return StrategySpec(name=name, ranker=ranker, scan=scan, refine=refine, fastpath=fastpath)
 
 
